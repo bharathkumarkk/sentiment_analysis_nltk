@@ -1,0 +1,95 @@
+import pandas as pd
+import numpy as np
+import re
+from langdetect import detect
+import os
+from datetime import datetime
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+# Load the raw data from the Excel file
+review_data_pd = pd.read_excel('Canada_SKU_SentimentAnalysis.xlsx')
+
+# Filter out old data based on the submission date
+review_data_pd = review_data_pd[review_data_pd['Review_Submission_Date.1'] > 2017].copy()
+
+# Select the required columns for processing
+review_text_pd = review_data_pd[["Article_no", "Subclass", "Brand", "Overall_Rating", "Review_Text"]].copy()
+
+# Function to detect language using langdetect library
+def detect_language(text):
+    try:
+        return detect(text)
+    except:
+        return 'unknown'
+
+# Apply language detection to the 'Review_Text' column and create a new 'language' column
+review_text_pd['language'] = review_text_pd['Review_Text'].apply(detect_language)
+
+# Filter out non-English comments based on the language filter
+language_filter = ['en']
+review_text_lan_pd = review_text_pd[review_text_pd['language'].isin(language_filter)].copy()
+
+# Function to process reviews using NLTK methods
+def process_reviews(review):
+    # Remove special characters
+    review = re.sub(r'\@\w+|\#', '', review)
+    
+    # Tokenize the review
+    tokenized = word_tokenize(review)
+    
+    # Remove stop words
+    tokenized = [token for token in tokenized if token not in stopwords.words("english")]
+    
+    # Lemmatize the words
+    lemmatizer = WordNetLemmatizer()
+    tokenized = [lemmatizer.lemmatize(token, pos='a') for token in tokenized]
+    
+    # Keep only alphabetic characters with three or more letters and join them into a string
+    return ' '.join([token for token in tokenized if token.isalpha() and len(token) > 2])
+
+# Apply the processing function to create a new column 'Review_Processed'
+review_text_lan_pd["Review_Processed"] = review_text_lan_pd["Review_Text"].str.lower().apply(process_reviews)
+
+# Create a copy of the processed data for further analysis
+processed_pd = review_text_lan_pd.copy()
+
+# Define lists for positive and negative ratings
+positive_filter = [5, 4]
+negative_filter = [1, 2]
+
+# Combine positive and negative filters into an overall rating list
+overall_rating_list = [positive_filter, negative_filter]
+
+# Loop to segment the processed data by subclasses and positive/negative ratings
+result_dict = {}
+
+# Create a main directory with today's date and time for storing results
+current_datetime = datetime.now().strftime("%Y%m%d_%H%M%S")
+main_directory = f"WordCountResults_{current_datetime}"
+os.makedirs(main_directory, exist_ok=True)
+
+# Iterate over positive and negative ratings
+for rating in overall_rating_list:
+    # Iterate over subclasses
+    for subclass in sorted(processed_pd['Subclass'].unique().tolist()):
+        # Subset the data based on subclass and negative ratings
+        df = processed_pd[(processed_pd['Subclass'] == subclass) & (processed_pd['Overall_Rating'].isin(rating))]
+
+        # Create a folder for each subclass within the main directory
+        subclass_directory = os.path.join(main_directory, subclass)
+        os.makedirs(subclass_directory, exist_ok=True)
+
+        # Save DataFrame to Excel in the subclass folder
+        df.to_excel(os.path.join(subclass_directory, f"backup_reviews_{subclass}_{rating}.xlsx"), index=False)
+
+        # Word count by brands
+        brand_word_counts = df.groupby(['Brand'])['Review_Processed'].apply(lambda x: ' '.join(x)).str.split(expand=True).stack().value_counts().reset_index()
+        brand_word_counts.columns = ['word', 'count']
+
+        # Save word counts by brands to Excel in the subclass folder
+        brand_word_counts.to_excel(os.path.join(subclass_directory, f"brand_word_counts_{subclass}_{rating}.xlsx"), index=False)
+
+        # Store results in the dictionary for future reference
+        result_dict[f"{subclass}_{rating}"] = {'df': df, 'brand_word_counts': brand_word_counts}
